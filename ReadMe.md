@@ -1,8 +1,12 @@
 ### Ros Docker
+```
 docker build -t drone-sim .
+```
 
 ### if not done define network
+```
 docker network create foo
+```
 
 ### run the core
 ```
