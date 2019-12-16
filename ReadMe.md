@@ -21,7 +21,12 @@ docker run -it --rm \
 ### connect to docker shell
 ```
 docker exec -it master bash
-source /ros_entrypoint.sh
+source /ros_entrypoint.sh && cd usr/src/catkin_ws/
+catkin_make
+source devel/setup.bash
+roslaunch spd_simulation world.launch
+
+
 rosrun gazebo_ros gzserver
 ```
 
