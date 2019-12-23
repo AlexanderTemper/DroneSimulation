@@ -13,6 +13,7 @@ git clone https://github.com/PX4/Firmware.git && cd Firmware && git checkout v1.
 ```
 ## run simmulation
 ### terminal 1: px4 macros Server: 
+```
 docker run -it --rm \
     --net droneSimNetwork \
     --name master \
@@ -23,12 +24,14 @@ source /ros_entrypoint.sh && cd usr/src/catkin_ws/ && catkin build && source dev
 roslaunch mavros px4.launch fcu_url:="udp://:14540@127.0.0.1:14557"
 ```
 ### terminal 2: px4 sitl
+```
 docker exec -it master bash
 cd /usr/src/px4src/Firmware
 no_sim=1 make px4_sitl_default gazebo
 ```
 
 ### terminal 3: gazebo ros
+```
 docker exec -it master bash
 source /ros_entrypoint.sh && cd usr/src/catkin_ws/ && source devel/setup.bash
 cd /usr/src/px4src/Firmware
