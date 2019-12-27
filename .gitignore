@@ -1,6 +1,5 @@
-catkin_ws/.catkin_workspace
-catkin_ws/build/
-catkin_ws/devel/
-catkin_ws/src/CMakeLists.txt
-volumen/
-
+.catkin_workspace
+build/
+devel/
+.catkin_tools
+logs/
