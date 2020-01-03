@@ -259,13 +259,13 @@ static void pidRewrite(ros::Publisher pid_pub_)
 
         // Correct difference by cycle time. Cycle time is jittery (can be different 2 times), so calculated difference
         // would be scaled by different dt each time. Division by dT fixes that.
-        delta = (delta * ((uint16_t) 0xFFFF / (cycleTime >> 4))) >> 6;
+        /*delta = (delta * ((uint16_t) 0xFFFF / (cycleTime >> 4))) >> 6;
         // add moving average here to reduce noise
         deltaSum = delta1[axis] + delta2[axis] + delta;
         delta2[axis] = delta1[axis];
         delta1[axis] = delta;
-        DTerm = (deltaSum * conf.D8[axis]) >> 8;
-*/
+        DTerm = (deltaSum * conf.D8[axis]) >> 8;*/
+
         // -----calculate total PID output
         axisPID[axis] = PTerm + ITerm + DTerm;
     }
