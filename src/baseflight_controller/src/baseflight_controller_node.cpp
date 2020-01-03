@@ -175,20 +175,24 @@ ros::Time last_cycle_time;
 
 static void pidRewrite(ros::Publisher pid_pub_)
 {
-    int32_t ANGLE_MODE = 0;
+    int32_t ANGLE_MODE = 1;
     int errorAngle = 0;
     int axis;
     int32_t delta = 0, deltaSum = 0;
-    static int delta1[3], delta2[3];
+    static int32_t delta1[3], delta2[3];
     int32_t PTerm = 0, ITerm = 0, DTerm = 0;
     static int32_t lastError[3] = {0,0,0};
     int32_t AngleRateTmp = 0, RateError = 0;
 
-    uint64_t cycleTime = (ros::Time::now().nsec - last_cycle_time.nsec) / 1000;
-    if(cycleTime ==0 ){
-        ROS_INFO("cycleTime was 0");
+    int32_t cycleTime = (ros::Time::now().nsec - last_cycle_time.nsec) / 1000;
+    if(cycleTime == 0 || cycleTime > 10000)
+    {
+        ROS_INFO("cycleTime out of scope %i ", cycleTime);
+        last_cycle_time = ros::Time::now();
         return;
     }
+    //ROS_INFO("cycleTime was %lu",cycleTime);
+    
     
     last_cycle_time = ros::Time::now();
     int angle[2] = {0,0};
@@ -236,37 +240,41 @@ static void pidRewrite(ros::Publisher pid_pub_)
             }
         }
         pid_msg->AngleRateTmp.push_back(AngleRateTmp);
+        
         // --------low-level gyro-based PID. ----------
-        // Used in stand-alone mode for ACRO, controlled by higher level regulators in other modes
-        // -----calculate scaled error.AngleRates
-        // multiplication of rcCommand corresponds to changing the sticks scaling here
         RateError = AngleRateTmp - gyroData[axis];
         pid_msg->RateError.push_back(RateError);
-        
-        //ROS_INFO("%i %i %i",axisPID[ROLL],axisPID[PITCH],axisPID[YAW]);
+
         // -----calculate P component
         PTerm = (RateError * conf.P8[axis]) >> 7;
         pid_msg->PTerm.push_back(PTerm);
-        // -----calculate I component
-        // there should be no division before accumulating the error to integrator, because the precision would be reduced.
-        errorGyroI[axis] = errorGyroI[axis] + RateError * conf.I8[axis];
-        errorGyroI[axis] = constrain(errorGyroI[axis], -2097152, +2097152);
+        
+        
+        // -----calculate I component
+        // there should be no division before accumulating the error to integrator, because the precision would be reduced.
+        // Precision is critical, as I prevents from long-time drift. Thus, 32 bits integrator is used.
+        // Time correction (to avoid different I scaling for different builds based on average cycle time)
+        // is normalized to cycle time = 2048.
+        errorGyroI[axis] = errorGyroI[axis] + ((RateError * (int32_t) cycleTime) >> 11) * conf.I8[axis];
+
+        // limit maximum integrator value to prevent WindUp - accumulating extreme values when system is saturated.
+        // I coefficient (I8) moved before integration to make limiting independent from PID settings
+        errorGyroI[axis] = constrain(errorGyroI[axis], -2097152, +2097152);
         ITerm = errorGyroI[axis] >> 13;
         pid_msg->ITerm.push_back(ITerm);
+        
         //-----calculate D-term
-        delta = RateError - lastError[axis];  // 16 bits is ok here, the dif between 2 consecutive gyro reads is limited to 800
+        delta = RateError - lastError[axis];
         lastError[axis] = RateError;
-
-        // Correct difference by cycle time. Cycle time is jittery (can be different 2 times), so calculated difference
-        // would be scaled by different dt each time. Division by dT fixes that.
-        /*delta = (delta * ((uint16_t) 0xFFFF / (cycleTime >> 4))) >> 6;
+        
+        delta = (delta * ((uint16_t) 0xFFFF / (cycleTime >> 4))) >> 6;
         // add moving average here to reduce noise
         deltaSum = delta1[axis] + delta2[axis] + delta;
         delta2[axis] = delta1[axis];
         delta1[axis] = delta;
-        DTerm = (deltaSum * conf.D8[axis]) >> 8;*/
-
-        // -----calculate total PID output
+        DTerm = (deltaSum * conf.D8[axis]) >> 8;
+        pid_msg->DTerm.push_back(DTerm);
+        // -----calculate total PID outputc
         axisPID[axis] = PTerm + ITerm + DTerm;
     }
 
@@ -283,7 +291,7 @@ static void pidRewrite(ros::Publisher pid_pub_)
     //ROS_INFO("%i %i %i",axisPID[ROLL],axisPID[PITCH],axisPID[YAW]);
 }
 
-
+int headFreeModeHold = 0;
 void joyCallback(const sensor_msgs::JoyConstPtr& msg) {
     sensor_msgs::Joy current_joy_;
     current_joy_ = *msg;
@@ -291,7 +299,20 @@ void joyCallback(const sensor_msgs::JoyConstPtr& msg) {
     rcCommand[ROLL] = (-msg->axes[1] * 500);
     rcCommand[PITCH] = (-msg->axes[2] * 500);
     rcCommand[YAW] = (msg->axes[3] * 500);
-    //ROS_INFO("RC [%i,%i,%i,%i] ", rcCommand[THROTTLE],rcCommand[ROLL],rcCommand[PITCH],rcCommand[YAW]);
+    
+    int heading = (int) (attitude[YAW] / 10.0f);
+    if(rcCommand[THROTTLE] < 1050){
+        headFreeModeHold = heading;
+        
+    }
+    
+    /*float radDiff = (heading - headFreeModeHold) * M_PI / 180.0f;
+    float cosDiff = cosf(radDiff);
+    float sinDiff = sinf(radDiff);
+    int rcCommand_PITCH = rcCommand[PITCH] * cosDiff + rcCommand[ROLL] * sinDiff;
+    rcCommand[ROLL] = rcCommand[ROLL] * cosDiff - rcCommand[PITCH] * sinDiff;
+    rcCommand[PITCH] = rcCommand_PITCH;
+    ROS_INFO("RC [%i,%i,%i,%i] ", rcCommand[THROTTLE],rcCommand[ROLL],rcCommand[PITCH],rcCommand[YAW]);*/
 }
 
 rotors_control::EigenOdometry odometry;
@@ -335,17 +356,17 @@ int main(int argc, char** argv) {
     axisPID[PITCH]=0;
     axisPID[YAW]=0;
     initMixer();
-    conf.yawRate = 100;
+    conf.yawRate = 0;
     conf.rollPitchRate[ROLL] = 0;
     conf.rollPitchRate[PITCH] = 0;
-    conf.P8[ROLL] = 60;
-    conf.I8[ROLL] = 60;
+    conf.P8[ROLL] = 100;
+    conf.I8[ROLL] = 5;
     conf.D8[ROLL] = 30;
-    conf.P8[PITCH] = 60;
+    conf.P8[PITCH] = 100;
     conf.I8[PITCH] = 60;
     conf.D8[PITCH] = 30;
     conf.P8[YAW] = 100;
-    conf.I8[YAW] = 50;
+    conf.I8[YAW] = 5;
     conf.D8[YAW] = 25;
     conf.P8[PIDALT] = 50;
     conf.I8[PIDALT] = 0;
@@ -376,7 +397,7 @@ int main(int argc, char** argv) {
     
    
     
-    ros::Rate r(100); // 100 hz
+    ros::Rate r(250); // 400 hz
     while (ros::ok())
     {
         pidRewrite(pid_pub_);
