@@ -40,6 +40,46 @@ void odometryCallback(const nav_msgs::OdometryConstPtr& odometry_msg)
         attitude[YAW] += 3600;
     }
 }
+int constrain(int amt, int low, int high)
+{
+    if (amt < low)
+        return low;
+    else if (amt > high)
+        return high;
+    else
+        return amt;
+}
+int current_distance;
+void tofCallback(const geometry_msgs::PosePtr& msg)
+{   
+    current_distance = msg->position.z * 1000;
+    //ROS_INFO("Z %i ", current_distance);
+}
+
+ros::Time last_cycle_time;
+int integral;
+int last_error;
+float p = 0.01;
+float i = 0;
+float d = 0;
+int hoverat = 500;
+int altHoldThrottle = 0;
+int getAltitudeThrottle(int distance, int target_distance,int cycleTime)
+{
+    int dTime = cycleTime;
+    
+    int error = target_distance - distance;
+    integral = constrain(integral + error, -32000, +32000);
+    int derivative = error - last_error;
+
+    int kp = constrain(p * error, -400, +400);
+    int ki = constrain(i * integral, -500, +500);
+    int kd = constrain(d * derivative, -250, +250);
+    last_error = error;
+    
+    return kp + ki + kd;
+}
+
 void joyCallback(const sensor_msgs::JoyConstPtr& msg) {
    
     rcCommand[THROTTLE]= (-msg->axes[0] + 1) * 500 + 1000;
@@ -52,7 +92,7 @@ void joyCallback(const sensor_msgs::JoyConstPtr& msg) {
     }
 
      
-    ROS_INFO("RC-Raw %i [%i,%i,%i,%i] ",heading - headFreeModeHold, rcCommand[THROTTLE],rcCommand[ROLL],rcCommand[PITCH],rcCommand[YAW]);
+    //ROS_INFO("RC-Raw %i [%i,%i,%i,%i] ",heading - headFreeModeHold, rcCommand[THROTTLE],rcCommand[ROLL],rcCommand[PITCH],rcCommand[YAW]);
     float radDiff = (heading - headFreeModeHold) * M_PI / 180.0f;
     float cosDiff = cosf(radDiff);
     float sinDiff = sinf(radDiff);
@@ -60,22 +100,27 @@ void joyCallback(const sensor_msgs::JoyConstPtr& msg) {
     int rcCommand_PITCH = rcCommand[PITCH] * cosDiff + rcCommand[ROLL] * sinDiff;
     rcCommand[ROLL] = rcCommand[ROLL] * cosDiff - rcCommand[PITCH] * sinDiff;
     rcCommand[PITCH] = rcCommand_PITCH;
-    
-    ROS_INFO("RC %i [%i,%i,%i,%i] ",attitude[YAW], rcCommand[THROTTLE],rcCommand[ROLL],rcCommand[PITCH],rcCommand[YAW]);
-    
-    current_joy_ = *msg;
-    control_msg_.thrust.z = rcCommand[THROTTLE];
-    control_msg_.roll = rcCommand[ROLL];
-    control_msg_.pitch = rcCommand[PITCH];
-    control_msg_.yaw_rate = rcCommand[YAW];
 }
+
+
 int main(int argc, char** argv) {
     ros::init(argc, argv, "gateway_node");
     ros::NodeHandle nh_;
     ros::Publisher ctrl_pub_;
     ros::Subscriber joy_sub_;
     ros::Subscriber odometry_sub_;
+    ros::Subscriber tof_sub_;
     std::string odometry_topic = "/hummingbird/odometry_sensor1/odometry";
+    std::string tof_topic = "/hummingbird/ground_truth/pose";
+    
+    integral = 0;
+    last_error = 0;
+    current_distance = 0;
+    last_cycle_time = ros::Time::now();
+    rcCommand[THROTTLE] = 1000;
+    rcCommand[ROLL] = 0;
+    rcCommand[PITCH] = 0;
+    rcCommand[YAW] = 0;
     
     control_msg_.roll = 0;
     control_msg_.pitch = 0;
@@ -87,19 +132,35 @@ int main(int argc, char** argv) {
     
     joy_sub_ = nh_.subscribe("joy", 1, &joyCallback);
     odometry_sub_ = nh_.subscribe(odometry_topic,1,odometryCallback);
+    tof_sub_ = nh_.subscribe(tof_topic,1,tofCallback);
     
     ctrl_pub_ = nh_.advertise<mav_msgs::RollPitchYawrateThrust> (mav_msgs::default_topics::COMMAND_ROLL_PITCH_YAWRATE_THRUST, 1);
 
     
 
-    ros::Rate r(400);
+    ros::Rate r(250);
     while (ros::ok())
     {
-        ros::Time update_time = ros::Time::now();
-        control_msg_.header.stamp = update_time;
-        control_msg_.header.frame_id = "rotors_joy_frame";
-        ctrl_pub_.publish(control_msg_);
-        
+        int cycleTime = (ros::Time::now().nsec - last_cycle_time.nsec) / 1000;
+        if(cycleTime == 0 || cycleTime > 10000)
+        {
+            ROS_INFO("cycleTime out of scope %i ", cycleTime);
+            last_cycle_time = ros::Time::now();
+            
+        } else {
+            int thrust_alt = getAltitudeThrottle(current_distance, hoverat,cycleTime);
+            altHoldThrottle = constrain(rcCommand[THROTTLE] + thrust_alt, 1050, 1800);
+            ROS_INFO("Thr %i %i %i %i ",thrust_alt, rcCommand[THROTTLE],rcCommand[THROTTLE] + thrust_alt, altHoldThrottle);
+
+            control_msg_.roll = rcCommand[ROLL];
+            control_msg_.pitch = rcCommand[PITCH];
+            control_msg_.yaw_rate = rcCommand[YAW];
+            control_msg_.thrust.z = altHoldThrottle;
+            ros::Time update_time = ros::Time::now();
+            control_msg_.header.stamp = update_time;
+            control_msg_.header.frame_id = "rotors_joy_frame";
+            ctrl_pub_.publish(control_msg_);
+        }
         ros::spinOnce();
         r.sleep();
     }
