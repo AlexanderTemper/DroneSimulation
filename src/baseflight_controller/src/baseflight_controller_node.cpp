@@ -1,8 +1,7 @@
 #include <ros/ros.h>
 #include <mav_msgs/default_topics.h>
 #include <mav_msgs/Actuators.h>
-#include <sensor_msgs/Joy.h>
-#include <sensor_msgs/Imu.h>
+#include <mav_msgs/RollPitchYawrateThrust.h>
 #include <nav_msgs/Odometry.h>
 #include <rotors_control/common.h>
 #include <baseflight_controller/pidStatus.h>
@@ -100,7 +99,7 @@ void initMixer(){
     conf.MIDRC = 1500;
     conf.MINCHECK = 1000;
     conf.MAXCHECK = 1900;
-    conf.YAW_DIRECTION = 1;
+    conf.YAW_DIRECTION = -1;
     
     // copy motor-based mixers
     for (int i = 0; i < numberMotor; i++) {
@@ -249,17 +248,17 @@ static void pidRewrite(ros::Publisher pid_pub_)
         PTerm = (RateError * conf.P8[axis]) >> 7;
         pid_msg->PTerm.push_back(PTerm);
         
-        
-        // -----calculate I component
-        // there should be no division before accumulating the error to integrator, because the precision would be reduced.
-        // Precision is critical, as I prevents from long-time drift. Thus, 32 bits integrator is used.
-        // Time correction (to avoid different I scaling for different builds based on average cycle time)
-        // is normalized to cycle time = 2048.
-        errorGyroI[axis] = errorGyroI[axis] + ((RateError * (int32_t) cycleTime) >> 11) * conf.I8[axis];
-
-        // limit maximum integrator value to prevent WindUp - accumulating extreme values when system is saturated.
-        // I coefficient (I8) moved before integration to make limiting independent from PID settings
-        errorGyroI[axis] = constrain(errorGyroI[axis], -2097152, +2097152);
+        // -----calculate I component
+        // there should be no division before accumulating the error to integrator, because the precision would be reduced.
+        // Precision is critical, as I prevents from long-time drift. Thus, 32 bits integrator is used.
+        // Time correction (to avoid different I scaling for different builds based on average cycle time)
+        // is normalized to cycle time = 2048.
+        errorGyroI[axis] = errorGyroI[axis] + ((RateError * (int32_t) cycleTime) >> 11) * conf.I8[axis];
+
+        // limit maximum integrator value to prevent WindUp - accumulating extreme values when system is saturated.
+        // I coefficient (I8) moved before integration to make limiting independent from PID settings
+        errorGyroI[axis] = constrain(errorGyroI[axis], -2097152, +2097152);
+
         ITerm = errorGyroI[axis] >> 13;
         pid_msg->ITerm.push_back(ITerm);
         
@@ -291,28 +290,13 @@ static void pidRewrite(ros::Publisher pid_pub_)
     //ROS_INFO("%i %i %i",axisPID[ROLL],axisPID[PITCH],axisPID[YAW]);
 }
 
-int headFreeModeHold = 0;
-void joyCallback(const sensor_msgs::JoyConstPtr& msg) {
-    sensor_msgs::Joy current_joy_;
-    current_joy_ = *msg;
-    rcCommand[THROTTLE] = (-msg->axes[0] + 1) * 500 + 1000;
-    rcCommand[ROLL] = (-msg->axes[1] * 500);
-    rcCommand[PITCH] = (-msg->axes[2] * 500);
-    rcCommand[YAW] = (msg->axes[3] * 500);
-    
-    int heading = (int) (attitude[YAW] / 10.0f);
-    if(rcCommand[THROTTLE] < 1050){
-        headFreeModeHold = heading;
-        
-    }
-    
-    /*float radDiff = (heading - headFreeModeHold) * M_PI / 180.0f;
-    float cosDiff = cosf(radDiff);
-    float sinDiff = sinf(radDiff);
-    int rcCommand_PITCH = rcCommand[PITCH] * cosDiff + rcCommand[ROLL] * sinDiff;
-    rcCommand[ROLL] = rcCommand[ROLL] * cosDiff - rcCommand[PITCH] * sinDiff;
-    rcCommand[PITCH] = rcCommand_PITCH;
-    ROS_INFO("RC [%i,%i,%i,%i] ", rcCommand[THROTTLE],rcCommand[ROLL],rcCommand[PITCH],rcCommand[YAW]);*/
+void gatewayCallback(const mav_msgs::RollPitchYawrateThrustConstPtr& msg) {
+  
+    rcCommand[THROTTLE] = msg->thrust.z;
+    rcCommand[ROLL] = msg->roll;
+    rcCommand[PITCH] = msg->pitch;
+    rcCommand[YAW] = msg->yaw_rate;
+    ROS_INFO("RC-COMMAND [%i,%i,%i,%i] ",rcCommand[ROLL],rcCommand[PITCH],rcCommand[YAW],rcCommand[THROTTLE]);
 }
 
 rotors_control::EigenOdometry odometry;
@@ -324,7 +308,7 @@ void odometryCallback(const nav_msgs::OdometryConstPtr& odometry_msg)
     
     attitude[ROLL] = euler_angles.x()*(1800.0f/M_PI);
     attitude[PITCH] = euler_angles.y()*(1800.0f/M_PI);
-    attitude[YAW] = euler_angles.z()*(1800.0f/M_PI);
+    attitude[YAW] = -euler_angles.z()*(1800.0f/M_PI);
     
     if (attitude[YAW] < 0) {
         attitude[YAW] += 3600;
@@ -332,7 +316,7 @@ void odometryCallback(const nav_msgs::OdometryConstPtr& odometry_msg)
     
     gyro[0]=odometry.angular_velocity.x()*(180.0f/M_PI);
     gyro[1]=odometry.angular_velocity.y()*(180.0f/M_PI);
-    gyro[2]=odometry.angular_velocity.z()*(180.0f/M_PI);
+    gyro[2]=-odometry.angular_velocity.z()*(180.0f/M_PI);
 }
 
  
@@ -340,11 +324,10 @@ void odometryCallback(const nav_msgs::OdometryConstPtr& odometry_msg)
 int main(int argc, char** argv) {
     ros::init(argc, argv, "baseflight_controller_node");
     ros::Subscriber odometry_sub_;
+    ros::Subscriber cmd_gateway_sub_;
     ros::Publisher actuators_pub_;
     ros::Publisher pid_pub_;
-    ros::Subscriber joy_sub_;
     ros::NodeHandle nh_;
-    std::string imu_sub_topic = "/hummingbird/imu";
     std::string odometry_topic = "/hummingbird/odometry_sensor1/odometry";
     std::string actuators_pub_topic = "/hummingbird/command/motor_speed";
     int motor[4];
@@ -390,12 +373,10 @@ int main(int argc, char** argv) {
     
     last_cycle_time = ros::Time::now();
     odometry_sub_ = nh_.subscribe(odometry_topic,1,odometryCallback);
-    joy_sub_ = nh_.subscribe("joy", 1, &joyCallback);
-    
+    cmd_gateway_sub_ = nh_.subscribe(mav_msgs::default_topics::COMMAND_ROLL_PITCH_YAWRATE_THRUST, 1, &gatewayCallback);
+
     pid_pub_ = nh_.advertise<baseflight_controller::pidStatus>("baseflight_controller/pidStatus", 1);
     actuators_pub_ = nh_.advertise<mav_msgs::Actuators>(actuators_pub_topic, 1);
-    
-   
     
     ros::Rate r(250); // 400 hz
     while (ros::ok())
