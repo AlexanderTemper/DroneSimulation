@@ -59,22 +59,21 @@ void tofCallback(const geometry_msgs::PosePtr& msg)
 ros::Time last_cycle_time;
 int integral;
 int last_error;
-float p = 0.01;
-float i = 0;
-float d = 0;
+float p = 0.4;//0.1
+float i = 0.001;
+float d = 50;
 int hoverat = 500;
 int altHoldThrottle = 0;
 int getAltitudeThrottle(int distance, int target_distance,int cycleTime)
-{
-    int dTime = cycleTime;
-    
+{ 
     int error = target_distance - distance;
-    integral = constrain(integral + error, -32000, +32000);
-    int derivative = error - last_error;
-
+    integral = integral + error;
+    int derivative = ((error - last_error)/(float)cycleTime) * 4000;
+    //ROS_INFO("derivative %i", derivative);
     int kp = constrain(p * error, -400, +400);
-    int ki = constrain(i * integral, -500, +500);
+    int ki = constrain(i * integral, -1000, +1000);
     int kd = constrain(d * derivative, -250, +250);
+    //ROS_INFO("error %i %i [%i,%i,%i]", error,integral,kp,ki,kd);
     last_error = error;
     
     return kp + ki + kd;
@@ -87,8 +86,10 @@ void joyCallback(const sensor_msgs::JoyConstPtr& msg) {
     rcCommand[PITCH] = (-msg->axes[2] * 500);
     rcCommand[YAW] = (-msg->axes[3] * 500);
     int heading = (int) (attitude[YAW] / 10.0f);
-    if(rcCommand[THROTTLE] < 1050){
+    if(rcCommand[THROTTLE] < 1050){ // Reset Things
         headFreeModeHold = heading;
+        integral = 0;
+        last_error = 0;
     }
 
      
@@ -145,8 +146,6 @@ int main(int argc, char** argv) {
         if(cycleTime == 0 || cycleTime > 10000)
         {
             ROS_INFO("cycleTime out of scope %i ", cycleTime);
-            last_cycle_time = ros::Time::now();
-            
         } else {
             int thrust_alt = getAltitudeThrottle(current_distance, hoverat,cycleTime);
             altHoldThrottle = constrain(rcCommand[THROTTLE] + thrust_alt, 1050, 1800);
@@ -161,10 +160,18 @@ int main(int argc, char** argv) {
             control_msg_.header.frame_id = "rotors_joy_frame";
             ctrl_pub_.publish(control_msg_);
         }
+        last_cycle_time = ros::Time::now();
         ros::spinOnce();
         r.sleep();
     }
-
+    control_msg_.roll = 0;
+    control_msg_.pitch = 0;
+    control_msg_.yaw_rate = 0;
+    control_msg_.thrust.z = 0;
+    ros::Time update_time = ros::Time::now();
+    control_msg_.header.stamp = update_time;
+    control_msg_.header.frame_id = "rotors_joy_frame";
+    ctrl_pub_.publish(control_msg_);
 
     return 0;
 }
