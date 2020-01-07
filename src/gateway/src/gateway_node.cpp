@@ -2,6 +2,7 @@
 #include <mav_msgs/default_topics.h>
 #include <mav_msgs/RollPitchYawrateThrust.h>
 #include <sensor_msgs/Joy.h>
+#include <sensor_msgs/LaserScan.h>
 #include <nav_msgs/Odometry.h>
 #include <rotors_control/common.h>
 
@@ -52,8 +53,15 @@ int constrain(int amt, int low, int high)
 int current_distance;
 void tofCallback(const geometry_msgs::PosePtr& msg)
 {   
-    current_distance = msg->position.z * 1000;
+   //current_distance = msg->position.z * 1000;
     //ROS_INFO("Z %i ", current_distance);
+}
+
+
+void tofGroundCallback(const sensor_msgs::LaserScanPtr& msg)
+{   
+    current_distance = msg->ranges[0] * 1000;
+    ROS_INFO("Z %i ", current_distance);
 }
 
 ros::Time last_cycle_time;
@@ -72,7 +80,7 @@ int getAltitudeThrottle(int distance, int target_distance,int cycleTime)
     //ROS_INFO("derivative %i", derivative);
     int kp = constrain(p * error, -400, +400);
     int ki = constrain(i * integral, -1000, +1000);
-    int kd = constrain(d * derivative, -250, +250);
+    int kd = constrain(d * derivative, -500, +500);
     //ROS_INFO("error %i %i [%i,%i,%i]", error,integral,kp,ki,kd);
     last_error = error;
     
@@ -111,9 +119,12 @@ int main(int argc, char** argv) {
     ros::Subscriber joy_sub_;
     ros::Subscriber odometry_sub_;
     ros::Subscriber tof_sub_;
+    ros::Subscriber tof_ground_sub_;
+    
     std::string odometry_topic = "/hummingbird/odometry_sensor1/odometry";
     std::string tof_topic = "/hummingbird/ground_truth/pose";
-    
+    std::string tof_ground_topic = "/hummingbird/tof_ground_sensor";
+
     integral = 0;
     last_error = 0;
     current_distance = 0;
@@ -133,6 +144,8 @@ int main(int argc, char** argv) {
     
     joy_sub_ = nh_.subscribe("joy", 1, &joyCallback);
     odometry_sub_ = nh_.subscribe(odometry_topic,1,odometryCallback);
+    tof_ground_sub_ = nh_.subscribe(tof_ground_topic,1,tofGroundCallback);
+    
     tof_sub_ = nh_.subscribe(tof_topic,1,tofCallback);
     
     ctrl_pub_ = nh_.advertise<mav_msgs::RollPitchYawrateThrust> (mav_msgs::default_topics::COMMAND_ROLL_PITCH_YAWRATE_THRUST, 1);
@@ -164,15 +177,7 @@ int main(int argc, char** argv) {
         ros::spinOnce();
         r.sleep();
     }
-    control_msg_.roll = 0;
-    control_msg_.pitch = 0;
-    control_msg_.yaw_rate = 0;
-    control_msg_.thrust.z = 0;
-    ros::Time update_time = ros::Time::now();
-    control_msg_.header.stamp = update_time;
-    control_msg_.header.frame_id = "rotors_joy_frame";
-    ctrl_pub_.publish(control_msg_);
-
+    
     return 0;
 }
 

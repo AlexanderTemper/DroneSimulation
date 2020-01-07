@@ -1,0 +1,108 @@
+<?xml version="1.0"?>
+<!--
+  Copyright 2015 Fadri Furrer, ASL, ETH Zurich, Switzerland
+  Copyright 2015 Michael Burri, ASL, ETH Zurich, Switzerland
+  Copyright 2015 Mina Kamel, ASL, ETH Zurich, Switzerland
+  Copyright 2015 Janosch Nikolic, ASL, ETH Zurich, Switzerland
+  Copyright 2015 Markus Achtelik, ASL, ETH Zurich, Switzerland
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-->
+
+<robot name="$(arg mav_name)" xmlns:xacro="http://ros.org/wiki/xacro">
+    <!-- Instantiate the mav-->
+    <xacro:include filename="$(find rotors_description)/urdf/mav_generic_odometry_sensor.gazebo" />
+   
+    <!-- Macro to add a tof sensor. -->
+    <xacro:macro name="tof_plugin_macro"
+        params="namespace tof_suffix parent_link tof_topic mass_tof_sensor *inertia *origin">
+        <!-- tof link -->
+        <link name="${namespace}/tof${tof_suffix}_link">
+            <inertial>
+                <xacro:insert_block name="inertia" />
+                <mass value="${mass_tof_sensor}" />  <!-- [kg] -->
+                <origin xyz="0 0 0" rpy="0 0 0" />
+            </inertial>
+            <visual>
+                <geometry>
+                    <box size="0.004 0.02 0.015"/>
+                </geometry>
+            </visual>
+        </link>
+        <!-- tof joint -->
+        <joint name="${namespace}/tof${tof_suffix}_joint" type="revolute">
+            <xacro:insert_block name="origin" />
+            <parent link="${parent_link}" />
+            <child link="${namespace}/tof${tof_suffix}_link" />
+            <limit upper="0" lower="0" effort="0" velocity="0" />
+        </joint>
+        <gazebo reference="${namespace}/tof${tof_suffix}_link">
+            <material>Gazebo/Red</material>
+            <sensor name="laser" type="ray">
+                <pose>0 0 0 0 0 0</pose>
+                <ray>
+                    <scan>
+                    <horizontal>
+                        <samples>1</samples>
+                        <resolution>1</resolution>
+                        <min_angle>-0</min_angle>
+                        <max_angle>0</max_angle>
+                    </horizontal>
+                    </scan>
+                    <range>
+                        <min>0.002</min>
+                        <max>2</max>
+                        <resolution>0.001</resolution>
+                    </range>
+                    <noise>
+                        <type>gaussian</type>
+                        <mean>0.0</mean>
+                        <stddev>0.001</stddev>
+                    </noise>
+                </ray>
+                <plugin name="${namespace}/tof${tof_suffix}_plugin" filename="libgazebo_ros_laser.so">
+                    <robotNamespace>${namespace}</robotNamespace>
+                    <topicName>${tof_topic}</topicName>
+                    <frameName>${namespace}/tof${tof_suffix}_link</frameName>
+                </plugin>
+                <always_on>1</always_on>
+                <update_rate>33</update_rate>
+                <visualize>true</visualize>
+            </sensor>
+        </gazebo>
+    </xacro:macro>
+  
+
+    <!-- TOF Sensor -->
+    <xacro:tof_plugin_macro
+        namespace="${namespace}"
+        tof_suffix="_ground"
+        parent_link="${namespace}/base_link"
+        tof_topic="tof_ground_sensor"
+        mass_tof_sensor="0.15">
+        <inertia ixx="0.00001" ixy="0.0" ixz="0.0" iyy="0.00001" iyz="0.0" izz="0.00001" />
+        <origin xyz="0.07 0 -0.03" rpy="0 ${pi/2} 0" />
+    </xacro:tof_plugin_macro>
+    
+    <!-- TOF Sensor -->
+    <xacro:tof_plugin_macro
+        namespace="${namespace}"
+        tof_suffix="_front"
+        parent_link="${namespace}/base_link"
+        tof_topic="tof_front_sensor"
+        mass_tof_sensor="0.15">
+        <inertia ixx="0.00001" ixy="0.0" ixz="0.0" iyy="0.00001" iyz="0.0" izz="0.00001" />
+        <origin xyz="0.15 0 -0.03" rpy="0 0 0" />
+    </xacro:tof_plugin_macro>
+</robot>
+
