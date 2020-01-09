@@ -1,4 +1,3 @@
 <launch>
-    <node name="joy_node" pkg="joy" type="joy_node" />
     <node name="baseflight_controller_node" pkg="baseflight_controller" type="baseflight_controller_node" />
 </launch>

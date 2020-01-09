@@ -219,7 +219,7 @@ static void pidRewrite(ros::Publisher pid_pub_)
     pid_msg->RateError.clear();
     pid_msg->PTerm.clear();
 
-    if(rcCommand[THROTTLE]<1050){
+    if(rcCommand[THROTTLE]< 1050){
         errorGyroI[0] = 0;
         errorGyroI[1] = 0;
         errorGyroI[2] = 0;
@@ -333,9 +333,6 @@ int main(int argc, char** argv) {
     std::string odometry_topic = "/hummingbird/odometry_sensor1/odometry";
     std::string actuators_pub_topic = "/hummingbird/command/motor_speed";
     int motor[4];
- 
-
-    // ROS_INFO("Topic %s , %s ", imu_sub_topic.c_str(),actuators_pub_topic.c_str());
 
     axisPID[ROLL]=0;
     axisPID[PITCH]=0;
@@ -356,22 +353,12 @@ int main(int argc, char** argv) {
     conf.P8[PIDALT] = 50;
     conf.I8[PIDALT] = 0;
     conf.D8[PIDALT] = 0;
-    conf.P8[PIDPOS] = 11; // POSHOLD_P * 100;
-    conf.I8[PIDPOS] = 0; // POSHOLD_I * 100;
+    conf.P8[PIDPOS] = 11;
+    conf.I8[PIDPOS] = 0;
     conf.D8[PIDPOS] = 0;
-    conf.P8[PIDPOSR] = 20; // POSHOLD_RATE_P * 10;
-    conf.I8[PIDPOSR] = 8; // POSHOLD_RATE_I * 100;
-    conf.D8[PIDPOSR] = 45; // POSHOLD_RATE_D * 1000;
-    conf.P8[PIDNAVR] = 14; // NAV_P * 10;
-    conf.I8[PIDNAVR] = 20; // NAV_I * 100;
-    conf.D8[PIDNAVR] = 80; // NAV_D * 1000;
     conf.P8[PIDLEVEL] = 60;
     conf.I8[PIDLEVEL] = 45;
     conf.D8[PIDLEVEL] = 100;
-    conf.P8[PIDMAG] = 40;
-    conf.P8[PIDVEL] = 120;
-    conf.I8[PIDVEL] = 45;
-    conf.D8[PIDVEL] = 1;
     
     last_cycle_time = ros::Time::now();
     odometry_sub_ = nh_.subscribe(odometry_topic,1,odometryCallback);
@@ -386,11 +373,6 @@ int main(int argc, char** argv) {
         pidRewrite(pid_pub_);
         //ROS_INFO("Gyro [%f,%f,%f] Acc [%f,%f,%f]",gyro_x,gyro_y,gyro_z,acc_x,acc_y,acc_z);
         //ROS_INFO("Motor [%i,%i,%i,%i] ",motor[0],motor[1],motor[2],motor[3]);
-        /*axisPID[ROLL]=rcCommand[ROLL];
-        axisPID[PITCH]=rcCommand[PITCH];
-        axisPID[YAW]=rcCommand[YAW];*/
-    
-        
         mixTable(motor);
         writeMotor(actuators_pub_, motor);
         
