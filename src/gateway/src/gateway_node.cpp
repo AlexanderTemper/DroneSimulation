@@ -60,7 +60,7 @@ void resetAltitudePid(){
     last_error = 0;
 }
 
-int holdXController(int cycleTime)
+int holdYController(int cycleTime)
 {
     static int l_error = 0;
     static int integral_e = 0;
@@ -92,7 +92,7 @@ int holdXController(int cycleTime)
     return kp + ki + kd;
 }
    
-int holdYController(int cycleTime)
+int holdXController(int cycleTime)
 {
     static int l_error = 0;
     static int integral_e = 0;
@@ -139,7 +139,7 @@ int collController(int cycleTime)
         return 0;
     }
     
-    int error = 1500 - front;
+    int error = 1000 - front;
     
     if(error < 0){ // we are not in danger zone
         return 0;
@@ -207,6 +207,22 @@ void calcHeadFree(int *roll, int *pitch){
     int rcCommand_PITCH = *pitch * cosDiff + *roll * sinDiff;
     *roll = *roll * cosDiff - *pitch * sinDiff;
     *pitch = rcCommand_PITCH;
+}
+
+
+void calcPushback(int *roll, int *pitch,int cycleTime){
+    int heading = (int) (attitude[YAW] / 10.0f);
+    
+    int force = collController(cycleTime);
+    //ROS_INFO("bevore %i [%i,%i,%i] ",heading - headFreeModeHold, rcCommand[THROTTLE],*roll,*pitch);
+    float radDiff = (heading - headFreeModeHold) * M_PI / 180.0f;
+    float cosDiff = cosf(radDiff);
+    float sinDiff = sinf(radDiff);
+
+    *roll = force * sinDiff;
+    *pitch = force * cosDiff;
+    
+    //ROS_INFO("bevore roll: %f, pitch: %f ",cosDiff - sinDiff, cosDiff + sinDiff);
 }
 
 
@@ -279,7 +295,7 @@ void joyCallback(const sensor_msgs::JoyConstPtr& msg)
     rcCommand[THROTTLE]= altMode ? 1050 : 1000;
     rcCommand[ROLL] = (-msg->axes[3] * 250);
     rcCommand[PITCH] = (msg->axes[4] * 250);
-    rcCommand[YAW] = (-msg->axes[0] * 250);
+    rcCommand[YAW] = (-msg->axes[0] * 500);
     
     if(rcCommand[THROTTLE] < 1050){ // Reset Things
         setCurrentHeading();
@@ -348,9 +364,15 @@ int main(int argc, char** argv) {
             
             //ROS_INFO("after[%i,%i] ",roll,pitch);
             // Replace Roll 
-            roll = constrain(holdXController(cycleTime),-500,500);
-            //pitch = constrain(holdYController(cycleTime),-500,500);
-            pitch = pitch + constrain(collController(cycleTime),-500,500);
+            //roll = constrain(holdYController(cycleTime),-500,500);
+            //pitch = constrain(holdXController(cycleTime),-500,500);
+            int pushRoll,pushPitch;
+            calcPushback(&pushRoll,&pushPitch,cycleTime);
+            ROS_INFO("push[%i,%i] ",pushRoll,pushPitch);
+            
+            roll = constrain(roll + pushRoll,-500,500);
+            pitch = constrain(pitch + pushPitch,-500,500);
+            
             calcHeadFree(&roll,&pitch);
             
             //debug_pub_.publish(debug_msg_);
