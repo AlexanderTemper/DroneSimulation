@@ -104,5 +104,38 @@
         <inertia ixx="0.00001" ixy="0.0" ixz="0.0" iyy="0.00001" iyz="0.0" izz="0.00001" />
         <origin xyz="0.15 0 -0.03" rpy="0 0 0" />
     </xacro:tof_plugin_macro>
+    
+    <!-- TOF Sensor -->
+    <xacro:tof_plugin_macro
+        namespace="${namespace}"
+        tof_suffix="_back"
+        parent_link="${namespace}/base_link"
+        tof_topic="tof_back_sensor"
+        mass_tof_sensor="0.15">
+        <inertia ixx="0.00001" ixy="0.0" ixz="0.0" iyy="0.00001" iyz="0.0" izz="0.00001" />
+        <origin xyz="-0.15 0 -0.03" rpy="0 0 ${pi}" />
+    </xacro:tof_plugin_macro>
+    
+     <!-- TOF Sensor -->
+    <xacro:tof_plugin_macro
+        namespace="${namespace}"
+        tof_suffix="_left"
+        parent_link="${namespace}/base_link"
+        tof_topic="tof_left_sensor"
+        mass_tof_sensor="0.15">
+        <inertia ixx="0.00001" ixy="0.0" ixz="0.0" iyy="0.00001" iyz="0.0" izz="0.00001" />
+        <origin xyz="0 0.15 -0.03" rpy="0 0 ${pi/2}" />
+    </xacro:tof_plugin_macro>
+    
+     <!-- TOF Sensor -->
+    <xacro:tof_plugin_macro
+        namespace="${namespace}"
+        tof_suffix="_right"
+        parent_link="${namespace}/base_link"
+        tof_topic="tof_right_sensor"
+        mass_tof_sensor="0.15">
+        <inertia ixx="0.00001" ixy="0.0" ixz="0.0" iyy="0.00001" iyz="0.0" izz="0.00001" />
+        <origin xyz="0 -0.15 -0.03" rpy="0 0 -${pi/2}" />
+    </xacro:tof_plugin_macro>
 </robot>
 

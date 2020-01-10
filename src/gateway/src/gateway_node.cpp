@@ -25,6 +25,44 @@ enum {
     AUX4
 };
 
+
+typedef enum {
+    FRONT = 0,
+    LEFT,
+    RIGHT,
+    REAR
+}tofDirection;
+
+typedef struct tof_controller_s{
+	int l_error;
+	int integral_e;
+	float derivative1;
+	float derivative2;
+    int range;
+    std::string tof_topic;
+    ros::Subscriber subscriber;
+    tofDirection direction;
+} tof_controller_t;
+
+// Wrapper for Callback uses
+class TofSensor
+{
+    public:
+        tof_controller_t *sensordata;
+        void callback(const sensor_msgs::LaserScanPtr& msg){
+            int range = (int)(msg->ranges[0] * 1000);
+            if(range > 0){
+                sensordata->range = range;
+            } else {
+                sensordata->range = -1;
+            }
+            //ROS_INFO("%s %i ",sensordata->tof_topic.c_str(), range);
+        }
+    
+};
+
+
+
 int headFreeModeHold = 0;
 ros::Time last_cycle_time;
 
@@ -40,8 +78,6 @@ int altHoldThrottle = 0;
 // Arm Controller
 bool altMode = false;
 
-
-int front = 0;
 // Position
 float x = 0;
 float y = 0;
@@ -124,50 +160,34 @@ int holdXController(int cycleTime)
     return kp + ki + kd;
 }
  
-int collController(int cycleTime)
+
+int pushController(tof_controller_t *tof,int cycleTime)
 {
-    static int l_error = 0;
-    static int integral_e = 0;
-    static float derivative1 = 0;
-    static float derivative2 = 0;
-    
-    float pterm = 0.08;
+    float pterm = 0.04;
     float dterm = 20;
     
-    ROS_INFO("Front %i ",front );
-    if(front < 0){ // No Sensor Value
+    if(tof->range < 0){ // No Sensor Value
         return 0;
     }
     
-    int error = 1000 - front;
-    
+    int error = 2000 - tof->range;
     if(error < 0){ // we are not in danger zone
         return 0;
     }
+    
     //integral = integral + error;
-    float derivative = ((error - l_error)/(float)cycleTime) * 4000;
-    float derivativeSum = derivative1 + derivative2 + derivative;
-    derivative2 = derivative1;
-    derivative1 = derivative;
+    float derivative = ((error - tof->l_error)/(float)cycleTime) * 4000;
+    float derivativeSum = tof->derivative1 + tof->derivative2 + derivative;
+    tof->derivative2 = tof->derivative1;
+    tof->derivative1 = derivative;
     
     //ROS_INFO("derivative %i", derivative);
     int ki=0, kp =0, kd = 0;
-    kp = - constrain(pterm * error, -250, +250);
+    kp = constrain(pterm * error, -500, +500);
     //int ki = constrain(i * integral, -1000, +1000);
     float derivativeFiltered = derivativeSum/3;
-    kd = - constrain(dterm * derivativeFiltered, -500, +500);
-    
-    if(kp>0){
-        kp=0;
-    }
-    if(kd>0){
-        kd=0;
-    }
-    ROS_INFO("error %i : %i %i",error,kp,kd);
-    /*debug_msg_.data.clear();
-    debug_msg_.data.push_back(kp);
-    debug_msg_.data.push_back(kd);*/
-    l_error = error;
+    kd = constrain(dterm * derivativeFiltered, -500, +500);
+    tof->l_error = error;
     
     return kp + ki + kd;
 }
@@ -210,19 +230,36 @@ void calcHeadFree(int *roll, int *pitch){
 }
 
 
-void calcPushback(int *roll, int *pitch,int cycleTime){
+void calcPushback (int *roll, int *pitch,tof_controller_t *tof,int cycleTime){
     int heading = (int) (attitude[YAW] / 10.0f);
-    
-    int force = collController(cycleTime);
     //ROS_INFO("bevore %i [%i,%i,%i] ",heading - headFreeModeHold, rcCommand[THROTTLE],*roll,*pitch);
     float radDiff = (heading - headFreeModeHold) * M_PI / 180.0f;
     float cosDiff = cosf(radDiff);
     float sinDiff = sinf(radDiff);
-
-    *roll = force * sinDiff;
-    *pitch = force * cosDiff;
     
-    //ROS_INFO("bevore roll: %f, pitch: %f ",cosDiff - sinDiff, cosDiff + sinDiff);
+    int force = 0;
+    force = pushController(tof,cycleTime);
+    
+    switch(tof->direction){
+        case FRONT:
+            *roll = -force * sinDiff;
+            *pitch = -force * cosDiff;
+            break;
+        case REAR:
+            *roll = force * sinDiff;
+            *pitch = force * cosDiff;
+            break;
+        case RIGHT:
+            *pitch = force * sinDiff;
+            *roll = -force * cosDiff;
+            break;
+        case LEFT:
+            *pitch = -force * sinDiff;
+            *roll = force * cosDiff;
+            break;
+        defaul:
+            break;
+    }
 }
 
 
@@ -255,17 +292,6 @@ void tofGroundCallback(const sensor_msgs::LaserScanPtr& msg)
     //current_distance = msg->ranges[0] * 1000;
     //ROS_INFO("Z %i ", current_distance);
 }
-void tofFrontdCallback(const sensor_msgs::LaserScanPtr& msg)
-{   
-    int range = (int)(msg->ranges[0] * 1000);
-    //current_distance = msg->ranges[0] * 1000;
-    if(range > 0){
-        front = range;
-    } else {
-        front = -1;
-    }
-}
-
 void joyCallback(const sensor_msgs::JoyConstPtr& msg) 
 {
     // RC Controll
@@ -303,6 +329,19 @@ void joyCallback(const sensor_msgs::JoyConstPtr& msg)
     }
 }
 
+
+void initTof(ros::NodeHandle *nh,tof_controller_t *tof, std::string topic, tofDirection dir, TofSensor *tofClass){
+    tof->tof_topic = topic;
+    tof->direction = dir;
+    tof->l_error = 0;
+    tof->integral_e = 0;
+    tof->derivative1 = 0;
+    tof->derivative2 = 0;
+    tof->range = -1;
+    tofClass->sensordata = tof;
+    tof->subscriber = nh->subscribe(tof->tof_topic,1,&TofSensor::callback,tofClass);
+    
+}
 //***** Main *****
 int main(int argc, char** argv) {
     ros::init(argc, argv, "gateway_node");
@@ -312,14 +351,11 @@ int main(int argc, char** argv) {
     ros::Subscriber odometry_sub_;
     ros::Subscriber tof_sub_;
     ros::Subscriber tof_ground_sub_;
-    ros::Subscriber tof_front_sub_;
     
     std::string odometry_topic = "/hummingbird/odometry_sensor1/odometry";
     std::string tof_topic = "/hummingbird/ground_truth/pose";
     std::string tof_ground_topic = "/hummingbird/tof_ground_sensor";
-    std::string tof_front_topic = "/hummingbird/tof_front_sensor";
 
-    
     last_cycle_time = ros::Time::now();
     rcCommand[THROTTLE] = 1000;
     rcCommand[ROLL] = 0;
@@ -338,13 +374,27 @@ int main(int argc, char** argv) {
     joy_sub_ = nh_.subscribe("joy", 1, &joyCallback);
     odometry_sub_ = nh_.subscribe(odometry_topic,1,odometryCallback);
     tof_ground_sub_ = nh_.subscribe(tof_ground_topic,1,tofGroundCallback);
-    tof_front_sub_ = nh_.subscribe(tof_front_topic,1,tofFrontdCallback);
     tof_sub_ = nh_.subscribe(tof_topic,1,tofCallback);
-    
     ctrl_pub_ = nh_.advertise<mav_msgs::RollPitchYawrateThrust> (mav_msgs::default_topics::COMMAND_ROLL_PITCH_YAWRATE_THRUST, 1);
-    
     ros::Publisher debug_pub_ = nh_.advertise<std_msgs::Float32MultiArray> ("debug", 1);
 
+    // init tof Sensors
+    tof_controller_t tof_front;
+    TofSensor tof_front_class;
+    initTof(&nh_,&tof_front,"/hummingbird/tof_front_sensor",FRONT,&tof_front_class);
+    
+    tof_controller_t tof_back;
+    TofSensor tof_back_class;
+    initTof(&nh_,&tof_back,"/hummingbird/tof_back_sensor",REAR,&tof_back_class);
+    
+    tof_controller_t tof_left;
+    TofSensor tof_left_class;
+    initTof(&nh_,&tof_left,"/hummingbird/tof_left_sensor",LEFT,&tof_left_class);
+    
+    tof_controller_t tof_right;
+    TofSensor tof_right_class;
+    initTof(&nh_,&tof_right,"/hummingbird/tof_right_sensor",RIGHT,&tof_right_class);
+    
     ros::Rate r(250);
     while (ros::ok())
     {
@@ -361,17 +411,25 @@ int main(int argc, char** argv) {
             //rcCommand[ROLL]= 
             int roll = rcCommand[ROLL];
             int pitch = rcCommand[PITCH];
-            
-            //ROS_INFO("after[%i,%i] ",roll,pitch);
-            // Replace Roll 
-            //roll = constrain(holdYController(cycleTime),-500,500);
-            //pitch = constrain(holdXController(cycleTime),-500,500);
             int pushRoll,pushPitch;
-            calcPushback(&pushRoll,&pushPitch,cycleTime);
-            ROS_INFO("push[%i,%i] ",pushRoll,pushPitch);
             
+            // ***** Front TOF *****
+            calcPushback(&pushRoll,&pushPitch,&tof_front,cycleTime);
             roll = constrain(roll + pushRoll,-500,500);
             pitch = constrain(pitch + pushPitch,-500,500);
+           /* // ***** Rear TOF *****
+            calcPushback(&pushRoll,&pushPitch,&tof_back,cycleTime);
+            roll = constrain(roll + pushRoll,-500,500);
+            pitch = constrain(pitch + pushPitch,-500,500);
+            // ***** Right TOF *****
+            calcPushback(&pushRoll,&pushPitch,&tof_right,cycleTime);
+            roll = constrain(roll + pushRoll,-500,500);
+            pitch = constrain(pitch + pushPitch,-500,500);
+            // ***** Left TOF *****
+            calcPushback(&pushRoll,&pushPitch,&tof_left,cycleTime);
+            roll = constrain(roll + pushRoll,-500,500);
+            pitch = constrain(pitch + pushPitch,-500,500);*/
+            
             
             calcHeadFree(&roll,&pitch);
             
