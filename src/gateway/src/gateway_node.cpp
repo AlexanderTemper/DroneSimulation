@@ -6,6 +6,7 @@
 #include <nav_msgs/Odometry.h>
 #include <rotors_control/common.h>
 #include <std_msgs/Float32MultiArray.h>
+#include <gateway/tofStatus.h>
 
 sensor_msgs::Joy current_joy_;
 mav_msgs::RollPitchYawrateThrust control_msg_;
@@ -189,7 +190,7 @@ int pushController(tof_controller_t *tof,int cycleTime)
     kp = constrain(pterm * error, -500, +500);
     //int ki = constrain(i * integral, -1000, +1000);
     float derivativeFiltered = derivativeSum/3;
-    //kd = constrain(dterm * derivativeFiltered, -50, +50);
+    kd = constrain(dterm * derivativeFiltered, -50, +50);
     tof->l_error = error;
     ROS_INFO("error %i , p %i ",error,kp);
     return kp + ki + kd;
@@ -364,6 +365,7 @@ int main(int argc, char** argv) {
     ros::init(argc, argv, "gateway_node");
     ros::NodeHandle nh_;
     ros::Publisher ctrl_pub_;
+    
     ros::Subscriber joy_sub_;
     ros::Subscriber odometry_sub_;
     ros::Subscriber tof_sub_;
@@ -394,7 +396,14 @@ int main(int argc, char** argv) {
     tof_sub_ = nh_.subscribe(tof_topic,1,tofCallback);
     ctrl_pub_ = nh_.advertise<mav_msgs::RollPitchYawrateThrust> (mav_msgs::default_topics::COMMAND_ROLL_PITCH_YAWRATE_THRUST, 1);
     ros::Publisher debug_pub_ = nh_.advertise<std_msgs::Float32MultiArray> ("debug", 1);
+    
+    ros::Publisher tof_pub_f = nh_.advertise<gateway::tofStatus>("gateway/tofStatusf", 1);
+    ros::Publisher tof_pub_b = nh_.advertise<gateway::tofStatus>("gateway/tofStatusb", 1);
+    ros::Publisher tof_pub_l = nh_.advertise<gateway::tofStatus>("gateway/tofStatusl", 1);
+    ros::Publisher tof_pub_r = nh_.advertise<gateway::tofStatus>("gateway/tofStatur", 1);
 
+    gateway::tofStatusPtr tof_status(new gateway::tofStatus);
+    
     // init tof Sensors
     tof_controller_t tof_front;
     TofSensor tof_front_class;
@@ -431,18 +440,40 @@ int main(int argc, char** argv) {
             int pushRoll,pushPitch;
             
             // ***** Front TOF *****
+            tof_status->x = tof_front.range*sin(attitude[YAW]*(M_PI/1800.0f));
+            tof_status->y = tof_front.range*cos(attitude[YAW]*(M_PI/1800.0f));
+            tof_pub_f.publish(tof_status);
+            
             calcPushback(&pushRoll,&pushPitch,&tof_front,cycleTime);
             roll = constrain(roll + pushRoll,-500,500);
             pitch = constrain(pitch + pushPitch,-500,500);
+            
+            
             // ***** Rear TOF *****
+            tof_status->x = tof_back.range*sin((attitude[YAW]+1800)*(M_PI/1800.0f));
+            tof_status->y = tof_back.range*cos((attitude[YAW]+1800)*(M_PI/1800.0f));
+            tof_pub_b.publish(tof_status);
+            
             calcPushback(&pushRoll,&pushPitch,&tof_back,cycleTime);
             roll = constrain(roll + pushRoll,-500,500);
             pitch = constrain(pitch + pushPitch,-500,500);
+            
+            
             // ***** Right TOF *****
+            tof_status->x = tof_right.range*sin((attitude[YAW]+900)*(M_PI/1800.0f));
+            tof_status->y = tof_right.range*cos((attitude[YAW]+900)*(M_PI/1800.0f));
+            tof_pub_r.publish(tof_status);
+            
             calcPushback(&pushRoll,&pushPitch,&tof_right,cycleTime);
             roll = constrain(roll + pushRoll,-500,500);
             pitch = constrain(pitch + pushPitch,-500,500);
+            
+            
             // ***** Left TOF *****
+            tof_status->x = tof_left.range*sin((attitude[YAW]-900)*(M_PI/1800.0f));
+            tof_status->y = tof_left.range*cos((attitude[YAW]-900)*(M_PI/1800.0f));
+            tof_pub_l.publish(tof_status);
+            
             calcPushback(&pushRoll,&pushPitch,&tof_left,cycleTime);
             roll = constrain(roll + pushRoll,-500,500);
             pitch = constrain(pitch + pushPitch,-500,500);
