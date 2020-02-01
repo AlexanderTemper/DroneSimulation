@@ -174,52 +174,81 @@ static int errorGyroI[3] = {0,0,0};
 static int errorAngleI[2] = {0,0};
 ros::Time last_cycle_time;
 
-static void pidRewrite(ros::Publisher pid_pub_)
+
+// Level Pid Controller
+static void levelPid(int32_t cycleTime,int16_t command[4],baseflight_controller::pidStatusPtr pid_msg)
 {
-    int32_t ANGLE_MODE = 1;
     int errorAngle = 0;
     int axis;
+    int angle[2] = {0,0};
     int32_t delta = 0, deltaSum = 0;
-    static int32_t delta1[3], delta2[3];
+    static int32_t delta1[3] = {0,0,0} ,delta2[3] = {0,0,0};
+    int32_t PTerm = 0, ITerm = 0, DTerm = 0;
+    static int32_t lastError[3] = {0,0,0};
+    int32_t AngleRateTmp = 0, RateError = 0;
+    
+    
+    angle[ROLL] = attitude[ROLL];
+    angle[PITCH] = attitude[PITCH];
+    
+    pid_msg->att.x = attitude[ROLL];
+    pid_msg->att.y = attitude[PITCH];
+    pid_msg->att.z = attitude[YAW];
+    
+    // ----------PID controller----------
+    for (axis = 0; axis < 3; axis++) {
+        if (axis != 2) {
+            errorAngle = command[axis] - angle[axis];
+            // P-Term
+            PTerm = (errorAngle * conf.P8[PIDALT]) >> 8;
+            command[axis] = PTerm;
+        } /*else { //yaw for testin
+            int angelz = attitude[YAW];
+            if(angelz > 1800){
+                angelz = angelz - 3600;
+            }
+            errorAngle = command[axis] - angelz;
+            command[axis] = errorAngle * conf.P8[PIDALT] >> 8;
+        }*/
+    }
+
+    pid_msg->pid.x = command[ROLL];
+    pid_msg->pid.y = command[PITCH];
+
+    //ROS_INFO("%i %i %i",axisPID[ROLL],axisPID[PITCH],axisPID[YAW]);
+}
+
+
+static void gyroPid(int32_t cycleTime,int16_t command[4],baseflight_controller::pidStatusPtr pid_msg)
+{
+    int axis;
+    int32_t delta = 0, deltaSum = 0;
+    static int32_t delta1[3] = {0,0,0}, delta2[3] = {0,0,0};
     int32_t PTerm = 0, ITerm = 0, DTerm = 0;
     static int32_t lastError[3] = {0,0,0};
     int32_t AngleRateTmp = 0, RateError = 0;
 
-    int32_t cycleTime = (ros::Time::now().nsec - last_cycle_time.nsec) / 1000;
     if(cycleTime == 0 || cycleTime > 10000)
     {
         ROS_INFO("cycleTime out of scope %i ", cycleTime);
         last_cycle_time = ros::Time::now();
         return;
     }
-    //ROS_INFO("cycleTime was %lu",cycleTime);
     
-    
-    last_cycle_time = ros::Time::now();
-    int angle[2] = {0,0};
-    angle[ROLL] = attitude[ROLL];
-    angle[PITCH] = attitude[PITCH];
-
     int gyroData[3];
     gyroData[0] = gyro[0];
     gyroData[1] = gyro[1];
     gyroData[2] = gyro[2];
 
-    baseflight_controller::pidStatusPtr pid_msg(new baseflight_controller::pidStatus);
-    
     pid_msg->gyro.x = gyroData[0];
     pid_msg->gyro.y = gyroData[1];
     pid_msg->gyro.z = gyroData[2];
-    
-    pid_msg->att.x = attitude[ROLL];
-    pid_msg->att.y = attitude[PITCH];
-    pid_msg->att.z = attitude[YAW];
     
     pid_msg->AngleRateTmp.clear();
     pid_msg->RateError.clear();
     pid_msg->PTerm.clear();
 
-    if(rcCommand[THROTTLE]< 1050){
+    if(command[THROTTLE]< 1050){
         errorGyroI[0] = 0;
         errorGyroI[1] = 0;
         errorGyroI[2] = 0;
@@ -229,16 +258,10 @@ static void pidRewrite(ros::Publisher pid_pub_)
 
     for (axis = 0; axis < 3; axis++) {
         // -----Get the desired angle rate depending on flight mode
-        if (axis == 2) { // YAW is always gyro-controlled (MAG correction is applied to rcCommand)
-            AngleRateTmp = (((int) (conf.yawRate + 27) * rcCommand[YAW]) >> 5);
+        if (axis == 2) {
+            AngleRateTmp = command[YAW] * conf.yawRate;
         } else {
-            // calculate error and limit the angle to 50 degrees max inclination
-            errorAngle = (constrain(rcCommand[axis], -500, +500) - angle[axis]) / 10.0f; // 16 bits is ok here
-            if (!ANGLE_MODE) { //control is GYRO based (ACRO and HORIZON - direct sticks control is applied to rate PID
-                AngleRateTmp = ((int32_t) (conf.rollPitchRate[axis] + 27) * rcCommand[axis]) >> 4;
-            } else { // it's the ANGLE mode - control is angle based, so control loop is needed
-                AngleRateTmp = (errorAngle * conf.P8[PIDLEVEL]) >> 4;
-            }
+            AngleRateTmp = command[axis];
         }
         pid_msg->AngleRateTmp.push_back(AngleRateTmp);
         
@@ -247,48 +270,34 @@ static void pidRewrite(ros::Publisher pid_pub_)
         pid_msg->RateError.push_back(RateError);
 
         // -----calculate P component
-        PTerm = (RateError * conf.P8[axis]) >> 7;
+        PTerm = (RateError * conf.P8[axis]) >> 7;  // p/128
         pid_msg->PTerm.push_back(PTerm);
         
         // -----calculate I component
-        // there should be no division before accumulating the error to integrator, because the precision would be reduced.
-        // Precision is critical, as I prevents from long-time drift. Thus, 32 bits integrator is used.
-        // Time correction (to avoid different I scaling for different builds based on average cycle time)
-        // is normalized to cycle time = 2048.
-        errorGyroI[axis] = errorGyroI[axis] + ((RateError * (int32_t) cycleTime) >> 11) * conf.I8[axis];
-
-        // limit maximum integrator value to prevent WindUp - accumulating extreme values when system is saturated.
-        // I coefficient (I8) moved before integration to make limiting independent from PID settings
-        errorGyroI[axis] = constrain(errorGyroI[axis], -2097152, +2097152);
-
-        ITerm = errorGyroI[axis] >> 13;
+        errorGyroI[axis] = errorGyroI[axis] + ((RateError * (int32_t) cycleTime) >> 11) * conf.I8[axis]; // T/2048 for normalisatzion
+        errorGyroI[axis] = constrain(errorGyroI[axis], -2097152, +2097152); // Limit windup  2^22 values
+        ITerm = errorGyroI[axis] >> 13; // gi/8192 to bring it back to normal values  => +/- 256
         pid_msg->ITerm.push_back(ITerm);
         
         //-----calculate D-term
         delta = RateError - lastError[axis];
         lastError[axis] = RateError;
         
-        delta = (delta * ((uint16_t) 0xFFFF / (cycleTime >> 4))) >> 6;
+        delta = (delta * ((uint16_t) 0xFFFF / (cycleTime >> 4))) >> 6; // d/dt * 2^14   scaling faktor => ~16384 at 4000deg change
         // add moving average here to reduce noise
         deltaSum = delta1[axis] + delta2[axis] + delta;
         delta2[axis] = delta1[axis];
         delta1[axis] = delta;
         DTerm = (deltaSum * conf.D8[axis]) >> 8;
-        pid_msg->DTerm.push_back(DTerm);
+        //pid_msg->DTerm.push_back(DTerm);
         // -----calculate total PID outputc
         axisPID[axis] = PTerm + ITerm + DTerm;
     }
 
-    pid_msg->pid.x = axisPID[ROLL];
-    pid_msg->pid.y = axisPID[PITCH];
+    //pid_msg->pid.x = axisPID[ROLL];
+    //pid_msg->pid.y = axisPID[PITCH];
     pid_msg->pid.z = axisPID[YAW];
 
-    ros::Time current_time = ros::Time::now();
-    pid_msg->header.stamp.sec = current_time.sec;
-    pid_msg->header.stamp.nsec = current_time.nsec;
-
-    pid_pub_.publish(pid_msg);
-    
     //ROS_INFO("%i %i %i",axisPID[ROLL],axisPID[PITCH],axisPID[YAW]);
 }
 
@@ -298,7 +307,7 @@ void gatewayCallback(const mav_msgs::RollPitchYawrateThrustConstPtr& msg) {
     rcCommand[ROLL] = msg->roll;
     rcCommand[PITCH] = msg->pitch;
     rcCommand[YAW] = msg->yaw_rate;
-    ROS_INFO("RC-COMMAND [%i,%i,%i,%i] ",rcCommand[ROLL],rcCommand[PITCH],rcCommand[YAW],rcCommand[THROTTLE]);
+    //ROS_INFO("RC-COMMAND [%i,%i,%i,%i] ",rcCommand[ROLL],rcCommand[PITCH],rcCommand[YAW],rcCommand[THROTTLE]);
 }
 
 rotors_control::EigenOdometry odometry;
@@ -338,27 +347,20 @@ int main(int argc, char** argv) {
     axisPID[PITCH]=0;
     axisPID[YAW]=0;
     initMixer();
-    conf.yawRate = 0;
-    conf.rollPitchRate[ROLL] = 0;
-    conf.rollPitchRate[PITCH] = 0;
-    conf.P8[ROLL] = 100;
-    conf.I8[ROLL] = 5;
+    conf.yawRate = 1;
+    conf.P8[ROLL] = 200;
+    conf.I8[ROLL] = 10;
     conf.D8[ROLL] = 30;
-    conf.P8[PITCH] = 100;
-    conf.I8[PITCH] = 60;
+    conf.P8[PITCH] = 200;
+    conf.I8[PITCH] = 10;
     conf.D8[PITCH] = 30;
-    conf.P8[YAW] = 100;
+    conf.P8[YAW] = 200;
     conf.I8[YAW] = 5;
     conf.D8[YAW] = 25;
-    conf.P8[PIDALT] = 50;
+    
+    conf.P8[PIDALT] = 160;
     conf.I8[PIDALT] = 0;
     conf.D8[PIDALT] = 0;
-    conf.P8[PIDPOS] = 11;
-    conf.I8[PIDPOS] = 0;
-    conf.D8[PIDPOS] = 0;
-    conf.P8[PIDLEVEL] = 60;
-    conf.I8[PIDLEVEL] = 45;
-    conf.D8[PIDLEVEL] = 100;
     
     last_cycle_time = ros::Time::now();
     odometry_sub_ = nh_.subscribe(odometry_topic,1,odometryCallback);
@@ -367,10 +369,37 @@ int main(int argc, char** argv) {
     pid_pub_ = nh_.advertise<baseflight_controller::pidStatus>("baseflight_controller/pidStatus", 1);
     actuators_pub_ = nh_.advertise<mav_msgs::Actuators>(actuators_pub_topic, 1);
     
+    
+    int16_t command[4];
+    
     ros::Rate r(250); // 400 hz
     while (ros::ok())
     {
-        pidRewrite(pid_pub_);
+        
+        int32_t cycleTime = (ros::Time::now().nsec - last_cycle_time.nsec) / 1000;
+        last_cycle_time = ros::Time::now();
+
+        
+        
+        baseflight_controller::pidStatusPtr pid_msg(new baseflight_controller::pidStatus);
+        ros::Time current_time = ros::Time::now();
+        pid_msg->header.stamp.sec = current_time.sec;
+        pid_msg->header.stamp.nsec = current_time.nsec;
+        
+        command[THROTTLE] = rcCommand[THROTTLE];
+        command[YAW] = rcCommand[YAW];
+        command[PITCH] = rcCommand[PITCH];
+        command[ROLL] = rcCommand[ROLL];
+        
+        
+        levelPid(cycleTime,command,pid_msg); // manipulates command
+    
+        gyroPid(cycleTime,command,pid_msg);
+        
+        
+        
+        
+         pid_pub_.publish(pid_msg);
         //ROS_INFO("Gyro [%f,%f,%f] Acc [%f,%f,%f]",gyro_x,gyro_y,gyro_z,acc_x,acc_y,acc_z);
         //ROS_INFO("Motor [%i,%i,%i,%i] ",motor[0],motor[1],motor[2],motor[3]);
         mixTable(motor);

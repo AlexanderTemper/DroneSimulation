@@ -77,6 +77,7 @@ int hoverat = 500;
 int altHoldThrottle = 0;
 // Arm Controller
 bool altMode = false;
+int yawrate = 0;
 
 // Position
 float x = 0;
@@ -163,14 +164,15 @@ int holdXController(int cycleTime)
 
 int pushController(tof_controller_t *tof,int cycleTime)
 {
-    float pterm = 0.04;
-    float dterm = 20;
+    float pterm = 0.1;
+    float dterm = 10;
+    int offsetSensor = 100; //offset sensor is away from collison
     
     if(tof->range < 0){ // No Sensor Value
         return 0;
     }
     
-    int error = 2000 - tof->range;
+    int error = 1000 - (tof->range - offsetSensor);
     if(error < 0){ // we are not in danger zone
         return 0;
     }
@@ -183,12 +185,13 @@ int pushController(tof_controller_t *tof,int cycleTime)
     
     //ROS_INFO("derivative %i", derivative);
     int ki=0, kp =0, kd = 0;
+    //kp = 100- (0.25/0.0024)*(1 - exp(-0.0024*error));
     kp = constrain(pterm * error, -500, +500);
     //int ki = constrain(i * integral, -1000, +1000);
     float derivativeFiltered = derivativeSum/3;
-    kd = constrain(dterm * derivativeFiltered, -500, +500);
+    //kd = constrain(dterm * derivativeFiltered, -50, +50);
     tof->l_error = error;
-    
+    ROS_INFO("error %i , p %i ",error,kp);
     return kp + ki + kd;
 }
 
@@ -303,6 +306,7 @@ void joyCallback(const sensor_msgs::JoyConstPtr& msg)
     // PS3 Controll
     static int keyState = 0;
     
+    
     switch(keyState){
         case 0: 
             if(msg->buttons[0] == 1){ 
@@ -319,14 +323,27 @@ void joyCallback(const sensor_msgs::JoyConstPtr& msg)
             keyState = 0;
     }
     rcCommand[THROTTLE]= altMode ? 1050 : 1000;
-    rcCommand[ROLL] = (-msg->axes[3] * 250);
-    rcCommand[PITCH] = (msg->axes[4] * 250);
+    rcCommand[ROLL] = (-msg->axes[3] * 50);
+    rcCommand[PITCH] = (msg->axes[4] * 50);
     rcCommand[YAW] = (-msg->axes[0] * 500);
+    
+    
+    if(msg->buttons[1] == 1){ 
+        yawrate = yawrate + 50;
+        ROS_INFO("yawrate = %i ", yawrate);
+    }
+    
+    if(msg->buttons[2] == 1){ 
+        yawrate = yawrate - 50;
+        ROS_INFO("yawrate = %i ", yawrate);
+    }
     
     if(rcCommand[THROTTLE] < 1050){ // Reset Things
         setCurrentHeading();
         resetAltitudePid();
     }
+    
+    rcCommand[YAW] = yawrate;
 }
 
 
@@ -417,7 +434,7 @@ int main(int argc, char** argv) {
             calcPushback(&pushRoll,&pushPitch,&tof_front,cycleTime);
             roll = constrain(roll + pushRoll,-500,500);
             pitch = constrain(pitch + pushPitch,-500,500);
-           /* // ***** Rear TOF *****
+            // ***** Rear TOF *****
             calcPushback(&pushRoll,&pushPitch,&tof_back,cycleTime);
             roll = constrain(roll + pushRoll,-500,500);
             pitch = constrain(pitch + pushPitch,-500,500);
@@ -428,7 +445,7 @@ int main(int argc, char** argv) {
             // ***** Left TOF *****
             calcPushback(&pushRoll,&pushPitch,&tof_left,cycleTime);
             roll = constrain(roll + pushRoll,-500,500);
-            pitch = constrain(pitch + pushPitch,-500,500);*/
+            pitch = constrain(pitch + pushPitch,-500,500);
             
             
             calcHeadFree(&roll,&pitch);
