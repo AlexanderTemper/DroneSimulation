@@ -149,6 +149,9 @@ float scale_angular_velocities(int motor)
     int max_rot_velocity = 838 - 150;
     
     float temp = (float)(motor - 1000) / 1000; // Scale to 0-1
+    if(rcCommand[THROTTLE]< 1050){
+        return 0;
+    }
     return temp * max_rot_velocity + 150;
 }
 

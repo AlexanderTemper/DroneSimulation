@@ -3,6 +3,7 @@
 #include <mav_msgs/RollPitchYawrateThrust.h>
 #include <sensor_msgs/Joy.h>
 #include <sensor_msgs/LaserScan.h>
+#include <sensor_msgs/Imu.h>
 #include <nav_msgs/Odometry.h>
 #include <rotors_control/common.h>
 #include <std_msgs/Float32MultiArray.h>
@@ -11,6 +12,11 @@
 sensor_msgs::Joy current_joy_;
 mav_msgs::RollPitchYawrateThrust control_msg_;
 std_msgs::Float32MultiArray debug_msg_;
+ros::Publisher debug_pub_;
+float gyroAverage[3];
+
+// Determine Dterm in direction of Sensor based on Acc of IMU
+bool dFromAcc = true;
 
 int attitude[3];
 int rcCommand[4];  // interval [1000;2000] for THROTTLE and [-500;+500] for
@@ -76,9 +82,24 @@ float i = 0.001;
 float d = 50;
 int hoverat = 500;
 int altHoldThrottle = 0;
+
+typedef enum {
+    X = 0,
+    Y,
+    Z
+} axis_e;
+
+float accTrim[3] = {0};
+bool AccInflightCalibrationActive = false;
+int InflightcalibratingA = 0;
+
 // Arm Controller
 bool altMode = false;
 int yawrate = 0;
+
+#define M_LN2_FLOAT 0.69314718055994530942f
+#define M_PI_FLOAT  3.14159265358979323846f
+#define BIQUAD_Q 1.0f / sqrtf(2.0f)     /* quality factor - 2nd order butterworth*/
 
 // Position
 float x = 0;
@@ -105,7 +126,7 @@ int holdYController(int cycleTime)
     static float derivative1 = 0;
     static float derivative2 = 0;
     
-    float pterm = 0.08;
+    float pterm = 0.4;
     float dterm = 20;
     int error = 0 - y;
     //integral = integral + error;
@@ -137,7 +158,7 @@ int holdXController(int cycleTime)
     static float derivative1 = 0;
     static float derivative2 = 0;
     
-    float pterm = 0.08;
+    float pterm = 0.4;
     float dterm = 20;
     int error = 0 - x;
     //integral = integral + error;
@@ -162,37 +183,140 @@ int holdXController(int cycleTime)
     return kp + ki + kd;
 }
  
+typedef enum {
+    FILTER_LPF,    // 2nd order Butterworth section
+    FILTER_NOTCH,
+    FILTER_BPF,
+} biquadFilterType_e;
+/* this holds the data required to update samples thru a filter */
+typedef struct biquadFilter_s {
+    float b0, b1, b2, a1, a2;
+    float x1, x2, y1, y2;
+} biquadFilter_t;
 
+static biquadFilter_t accFilter[3];
+
+void biquadFilterInit(biquadFilter_t *filter, float filterFreq, uint32_t refreshRate, float Q, biquadFilterType_e filterType)
+{
+    // setup variables
+    const float omega = 2.0f * M_PI_FLOAT * filterFreq * refreshRate * 0.000001f;
+    const float sn = sin(omega);
+    const float cs = cos(omega);
+    const float alpha = sn / (2.0f * Q);
+
+    float b0 = 0, b1 = 0, b2 = 0, a0 = 0, a1 = 0, a2 = 0;
+
+    switch (filterType) {
+    case FILTER_LPF:
+        // 2nd order Butterworth (with Q=1/sqrt(2)) / Butterworth biquad section with Q
+        // described in http://www.ti.com/lit/an/slaa447/slaa447.pdf
+        b0 = (1 - cs) * 0.5f;
+        b1 = 1 - cs;
+        b2 = (1 - cs) * 0.5f;
+        a0 = 1 + alpha;
+        a1 = -2 * cs;
+        a2 = 1 - alpha;
+        break;
+    case FILTER_NOTCH:
+        b0 =  1;
+        b1 = -2 * cs;
+        b2 =  1;
+        a0 =  1 + alpha;
+        a1 = -2 * cs;
+        a2 =  1 - alpha;
+        break;
+    case FILTER_BPF:
+        b0 = alpha;
+        b1 = 0;
+        b2 = -alpha;
+        a0 = 1 + alpha;
+        a1 = -2 * cs;
+        a2 = 1 - alpha;
+        break;
+    }
+
+    // precompute the coefficients
+    filter->b0 = b0 / a0;
+    filter->b1 = b1 / a0;
+    filter->b2 = b2 / a0;
+    filter->a1 = a1 / a0;
+    filter->a2 = a2 / a0;
+
+    // zero initial samples
+    filter->x1 = filter->x2 = 0;
+    filter->y1 = filter->y2 = 0;
+}
+
+float biquadFilterApply(biquadFilter_t *filter, float input)
+{
+    const float result = filter->b0 * input + filter->x1;
+    filter->x1 = filter->b1 * input - filter->a1 * result + filter->x2;
+    filter->x2 = filter->b2 * input - filter->a2 * result;
+    return result;
+}
+static float accumulatedMeasurements[3];
+static int accumulatedMeasurementCount = 0;
+
+
+int getAccInTofDir(tof_controller_t *tof){
+    
+    switch(tof->direction){
+        case FRONT:
+            return gyroAverage[X]*1000;
+        case REAR:
+            return -gyroAverage[X]*1000;
+        case RIGHT:
+            return -gyroAverage[Y]*1000;
+        case LEFT:
+            return gyroAverage[Y]*1000;
+    }
+    
+    return 0;
+}
 int pushController(tof_controller_t *tof,int cycleTime)
 {
-    float pterm = 0.1;
+    float pterm = 0.04;
     float dterm = 10;
+    float dtermAcc = 1;
     int offsetSensor = 100; //offset sensor is away from collison
     
+
     if(tof->range < 0){ // No Sensor Value
         return 0;
     }
-    
     int error = 1000 - (tof->range - offsetSensor);
     if(error < 0){ // we are not in danger zone
         return 0;
     }
     
-    //integral = integral + error;
-    float derivative = ((error - tof->l_error)/(float)cycleTime) * 4000;
-    float derivativeSum = tof->derivative1 + tof->derivative2 + derivative;
-    tof->derivative2 = tof->derivative1;
-    tof->derivative1 = derivative;
     
     //ROS_INFO("derivative %i", derivative);
     int ki=0, kp =0, kd = 0;
     //kp = 100- (0.25/0.0024)*(1 - exp(-0.0024*error));
-    kp = constrain(pterm * error, -500, +500);
-    //int ki = constrain(i * integral, -1000, +1000);
-    float derivativeFiltered = derivativeSum/3;
-    kd = constrain(dterm * derivativeFiltered, -50, +50);
+    if(error > 700){
+        kp = constrain(pterm * error, -200, +200);
+    }
+    
+    
+    
+    if(!dFromAcc){
+        float derivative = ((error - tof->l_error)/(float)cycleTime) * 4000;
+        float derivativeSum = tof->derivative1 + tof->derivative2 + derivative;
+        tof->derivative2 = tof->derivative1;
+        tof->derivative1 = derivative;
+        float derivativeFiltered = derivativeSum/3;
+        kd = constrain(dterm * derivativeFiltered, -50, +50);
+    } else {
+      
+        kd = constrain((-getAccInTofDir(tof)/1000.0)*dtermAcc*error, -300, +300);
+        if(kd < 0){ //only push away
+            kd=0;
+        }
+        //ROS_INFO("d %i ",kd);
+    }
+    
     tof->l_error = error;
-    ROS_INFO("error %i , p %i ",error,kp);
+    ROS_INFO("error %i , p %i d, %i",error,kp,kd);
     return kp + ki + kd;
 }
 
@@ -267,7 +391,28 @@ void calcPushback (int *roll, int *pitch,tof_controller_t *tof,int cycleTime){
 }
 
 
+
 // ***** Callbacks *****
+void imuCallback(const sensor_msgs::Imu& msg)
+{   
+
+    float x = msg.linear_acceleration.x;
+    float y = msg.linear_acceleration.y;
+    float z = msg.linear_acceleration.z;
+   
+    float fx = biquadFilterApply(&accFilter[X], x);
+    float fy = biquadFilterApply(&accFilter[Y], y);
+    float fz = biquadFilterApply(&accFilter[Z], z);
+
+    gyroAverage[X] = fx;
+    gyroAverage[Y] = fy;
+    gyroAverage[Z] = fz;
+}
+
+
+
+
+
 rotors_control::EigenOdometry odometry;
 void odometryCallback(const nav_msgs::OdometryConstPtr& odometry_msg)
 {   
@@ -360,6 +505,16 @@ void initTof(ros::NodeHandle *nh,tof_controller_t *tof, std::string topic, tofDi
     tof->subscriber = nh->subscribe(tof->tof_topic,1,&TofSensor::callback,tofClass);
     
 }
+
+
+int acc[2] = {0};
+void updateAccXY()
+{
+    acc[X] = gyroAverage[X]*1000;
+    acc[Y] = gyroAverage[Y]*1000;
+  
+    calcHeadFree(&acc[Y], &acc[X]);
+}
 //***** Main *****
 int main(int argc, char** argv) {
     ros::init(argc, argv, "gateway_node");
@@ -370,10 +525,12 @@ int main(int argc, char** argv) {
     ros::Subscriber odometry_sub_;
     ros::Subscriber tof_sub_;
     ros::Subscriber tof_ground_sub_;
+    ros::Subscriber imu_sub_;
     
     std::string odometry_topic = "/hummingbird/odometry_sensor1/odometry";
     std::string tof_topic = "/hummingbird/ground_truth/pose";
     std::string tof_ground_topic = "/hummingbird/tof_ground_sensor";
+    std::string imu_topic = "/hummingbird/imu";
 
     last_cycle_time = ros::Time::now();
     rcCommand[THROTTLE] = 1000;
@@ -393,15 +550,11 @@ int main(int argc, char** argv) {
     joy_sub_ = nh_.subscribe("joy", 1, &joyCallback);
     odometry_sub_ = nh_.subscribe(odometry_topic,1,odometryCallback);
     tof_ground_sub_ = nh_.subscribe(tof_ground_topic,1,tofGroundCallback);
+    imu_sub_ = nh_.subscribe(imu_topic,1,imuCallback);
     tof_sub_ = nh_.subscribe(tof_topic,1,tofCallback);
     ctrl_pub_ = nh_.advertise<mav_msgs::RollPitchYawrateThrust> (mav_msgs::default_topics::COMMAND_ROLL_PITCH_YAWRATE_THRUST, 1);
-    ros::Publisher debug_pub_ = nh_.advertise<std_msgs::Float32MultiArray> ("debug", 1);
+    debug_pub_ = nh_.advertise<std_msgs::Float32MultiArray> ("debug", 1);
     
-    ros::Publisher tof_pub_f = nh_.advertise<gateway::tofStatus>("gateway/tofStatusf", 1);
-    ros::Publisher tof_pub_b = nh_.advertise<gateway::tofStatus>("gateway/tofStatusb", 1);
-    ros::Publisher tof_pub_l = nh_.advertise<gateway::tofStatus>("gateway/tofStatusl", 1);
-    ros::Publisher tof_pub_r = nh_.advertise<gateway::tofStatus>("gateway/tofStatur", 1);
-
     gateway::tofStatusPtr tof_status(new gateway::tofStatus);
     
     // init tof Sensors
@@ -421,7 +574,13 @@ int main(int argc, char** argv) {
     TofSensor tof_right_class;
     initTof(&nh_,&tof_right,"/hummingbird/tof_right_sensor",RIGHT,&tof_right_class);
     
+    for (int axis = 0; axis < 3; axis++) {
+        biquadFilterInit(&accFilter[axis], 10, 500, BIQUAD_Q, FILTER_LPF);
+    }
+    
+   
     ros::Rate r(250);
+    
     while (ros::ok())
     {
         int cycleTime = (ros::Time::now().nsec - last_cycle_time.nsec) / 1000;
@@ -439,46 +598,37 @@ int main(int argc, char** argv) {
             int pitch = rcCommand[PITCH];
             int pushRoll,pushPitch;
             
-            // ***** Front TOF *****
-            tof_status->x = tof_front.range*sin(attitude[YAW]*(M_PI/1800.0f));
-            tof_status->y = tof_front.range*cos(attitude[YAW]*(M_PI/1800.0f));
-            tof_pub_f.publish(tof_status);
             
+            debug_msg_.data.clear();
+            // ***** Front TOF *****
             calcPushback(&pushRoll,&pushPitch,&tof_front,cycleTime);
             roll = constrain(roll + pushRoll,-500,500);
             pitch = constrain(pitch + pushPitch,-500,500);
             
             
             // ***** Rear TOF *****
-            tof_status->x = tof_back.range*sin((attitude[YAW]+1800)*(M_PI/1800.0f));
-            tof_status->y = tof_back.range*cos((attitude[YAW]+1800)*(M_PI/1800.0f));
-            tof_pub_b.publish(tof_status);
-            
             calcPushback(&pushRoll,&pushPitch,&tof_back,cycleTime);
             roll = constrain(roll + pushRoll,-500,500);
             pitch = constrain(pitch + pushPitch,-500,500);
             
             
             // ***** Right TOF *****
-            tof_status->x = tof_right.range*sin((attitude[YAW]+900)*(M_PI/1800.0f));
-            tof_status->y = tof_right.range*cos((attitude[YAW]+900)*(M_PI/1800.0f));
-            tof_pub_r.publish(tof_status);
-            
             calcPushback(&pushRoll,&pushPitch,&tof_right,cycleTime);
             roll = constrain(roll + pushRoll,-500,500);
             pitch = constrain(pitch + pushPitch,-500,500);
             
             
             // ***** Left TOF *****
-            tof_status->x = tof_left.range*sin((attitude[YAW]-900)*(M_PI/1800.0f));
-            tof_status->y = tof_left.range*cos((attitude[YAW]-900)*(M_PI/1800.0f));
-            tof_pub_l.publish(tof_status);
-            
             calcPushback(&pushRoll,&pushPitch,&tof_left,cycleTime);
             roll = constrain(roll + pushRoll,-500,500);
             pitch = constrain(pitch + pushPitch,-500,500);
+   
+                
+            // current acc in x,y
+            updateAccXY();
             
-            
+            debug_pub_.publish(debug_msg_);
+    
             calcHeadFree(&roll,&pitch);
             
             //debug_pub_.publish(debug_msg_);
