@@ -1,19 +1,22 @@
-# Install Rotors
-## Install Deps
-```
-sudo apt-get install ros-melodic-desktop-full ros-melodic-joy ros-melodic-octomap-ros python-wstool python-catkin-tools protobuf-compiler libgoogle-glog-dev
-```
-## Clone Repros
-```
-mkdir -p /usr/src/catkin_ws/src
-git clone https://github.com/ethz-asl/rotors_simulator.git
-git clone https://github.com/ethz-asl/mav_comm.git
-
-........
-```
-....
+# Install CrazyS
+Folow instruction under https://github.com/gsilano/CrazyS/tree/master
 
 
+
+## Build simulation
+```
+catkin init
+catkin build
+catkin build
+```
+## launch simulation
+```
+source devel/setup.bash 
+roslaunch src/gateway/launch/world.launch
+rosrun joy joy_node
+rosrun baseflight_controller baseflight_controller_node
+rosrun gateway gateway_node
+```
 # Simulation
 
 ![](https://raw.githubusercontent.com/AlexanderTemper/DroneSimulation/master/simulation.gif)
